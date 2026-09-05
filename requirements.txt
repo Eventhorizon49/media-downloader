@@ -1,0 +1,5 @@
+fastapi>=0.116
+uvicorn[standard]>=0.35
+yt-dlp[default,curl-cffi]>=2026.8.18
+imageio-ffmpeg>=0.6.0
+python-multipart>=0.0.20
