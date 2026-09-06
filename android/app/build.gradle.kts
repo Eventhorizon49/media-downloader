@@ -3,21 +3,19 @@ plugins {
 }
 
 android {
-    namespace = "com.eventhorizon.mediadownloader"
+    namespace = "com.eventhorizon.mediashare"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.eventhorizon.mediadownloader"
+        applicationId = "com.eventhorizon.mediashare"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 1
+        versionName = "1.0"
     }
 
     buildTypes {
-        release {
-            isMinifyEnabled = false
-        }
+        release { isMinifyEnabled = false }
     }
 
     compileOptions {
