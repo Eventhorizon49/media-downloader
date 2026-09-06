@@ -7,7 +7,7 @@ from fastapi import BackgroundTasks,FastAPI,HTTPException,Query
 from fastapi.responses import FileResponse,HTMLResponse
 from pydantic import BaseModel
 
-app=FastAPI(title='Media Downloader',version='1.4.0')
+app=FastAPI(title='Media Downloader',version='1.4.1')
 SECRET=os.getenv('TOKEN_SECRET','dev-change-me');FFMPEG=imageio_ffmpeg.get_ffmpeg_exe();ROOT=Path(__file__).resolve().parent
 SUPPORTED=('instagram.com','x.com','twitter.com','reddit.com','redd.it');UA='MediaDownloader/1.4 (+https://media-downloader-pcbv.onrender.com) Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36';IMAGE_EXTS=('.jpg','.jpeg','.png','.webp','.gif');DIRECT_EXTS=IMAGE_EXTS+('.mp4','.mov','.webm','.m4a','.aac')
 class AnalyzeRequest(BaseModel): url:str
@@ -53,10 +53,14 @@ def flat(info):
  return out or [info]
 
 def x_fxtwitter(u):
- m=re.search(r'/status/(\d+)',u)
- if not m:raise RuntimeError('X post ID not found')
- pid=m.group(1);last=None
- for ep in (f'https://api.fxtwitter.com/status/{pid}',f'https://api.fxtwitter.com/i/status/{pid}'):
+ m=re.search(r'/(?:i/)?([^/?#]+)/status/(\d+)',u)
+ if not m:
+  m2=re.search(r'/status/(\d+)',u)
+  if not m2:raise RuntimeError('X post ID not found')
+  user='i';pid=m2.group(1)
+ else:user=m.group(1);pid=m.group(2)
+ last=None
+ for ep in (f'https://api.fxtwitter.com/{user}/status/{pid}',f'https://api.fxtwitter.com/2/status/{pid}',f'https://api.fxtwitter.com/{pid}'):
   try:
    r=cr.get(ep,headers={'User-Agent':UA,'Accept':'application/json'},impersonate='chrome',timeout=30);last=r.status_code
    if r.status_code!=200:continue
@@ -129,11 +133,9 @@ def reddit_public(u):
 
 def best_public_x(u):
  candidates=[]
- for fn in (x_fxtwitter,x_syndication):
+ for fn in (ytdlp,x_fxtwitter,x_syndication):
   try:candidates.append(fn(u))
   except:pass
- try:candidates.append(ytdlp(u))
- except:pass
  if not candidates:raise RuntimeError('X extraction unavailable')
  return max(candidates,key=lambda x:len(flat(x)))
 def extract(u):
@@ -141,10 +143,9 @@ def extract(u):
  if p=='X / Twitter':return best_public_x(u)
  if p=='Reddit':
   candidates=[]
-  try:candidates.append(reddit_public(u))
-  except:pass
-  try:candidates.append(ytdlp(u))
-  except:pass
+  for fn in (ytdlp,reddit_public):
+   try:candidates.append(fn(u))
+   except:pass
   if not candidates:raise RuntimeError('Reddit extraction unavailable')
   return max(candidates,key=lambda x:len(flat(x)))
  return ytdlp(u)
@@ -169,7 +170,7 @@ def direct_file(s):return urlparse(s).path.lower().endswith(DIRECT_EXTS)
 def download_one(p,d,mode='best',height=None,prefix='media'):
  s=p.get('source') or p['url']
  if direct_file(s):
-  ext=Path(urlparse(s).path).suffix or ('.mp4' if 'video' in host(s) else '.bin');t=Path(d)/(prefix+ext);r=cr.get(s,headers={'User-Agent':UA},impersonate='chrome',timeout=120)
+  ext=Path(urlparse(s).path).suffix or '.bin';t=Path(d)/(prefix+ext);r=cr.get(s,headers={'User-Agent':UA},impersonate='chrome',timeout=120)
   if r.status_code!=200:raise RuntimeError(f'Direct media download failed ({r.status_code})')
   t.write_bytes(r.content);return t
  fmt='bestaudio/best' if mode=='audio' else (f'bestvideo*[height<={height}]+bestaudio/best[height<={height}]/best' if mode=='quality' and height else 'bestvideo*+bestaudio/best');o,c=opts(True,str(Path(d)/(prefix+'-%(title).60s.%(ext)s')),fmt)
@@ -184,7 +185,7 @@ def download_one(p,d,mode='best',height=None,prefix='media'):
    try:os.remove(c)
    except:pass
 @app.get('/health')
-def health():return {'ok':True,'yt_dlp':yt_dlp.version.__version__,'ffmpeg':bool(FFMPEG),'multi_media':True,'public_sensitive_media':True,'x_fallback':'fxtwitter'}
+def health():return {'ok':True,'yt_dlp':yt_dlp.version.__version__,'ffmpeg':bool(FFMPEG),'multi_media':True,'public_sensitive_media':True,'x_fallback':'fxtwitter+syndication'}
 @app.post('/api/analyze')
 def analyze(r:AnalyzeRequest):
  u=r.url.strip()
