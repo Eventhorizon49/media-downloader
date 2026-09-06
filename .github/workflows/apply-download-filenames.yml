@@ -1,0 +1,44 @@
+name: Apply download filenames
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-download-filenames.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update filename generation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('app.py')
+          s=p.read_text()
+          old="""def item(post,i,n):\n fm=i.get('formats') or [];typ='video' if any(f.get('vcodec') not in (None,'none') for f in fm) or i.get('duration') or str(i.get('ext','')).lower() in ('mp4','webm','mov') else 'image';src=i.get('_download_url') or i.get('webpage_url') or i.get('url') or post\n return {'index':n,'title':i.get('title') or f'Media {n+1}','thumbnail':i.get('thumbnail') or (src if typ=='image' else None),'duration':i.get('duration'),'width':i.get('width'),'height':i.get('height'),'filesize':i.get('filesize') or i.get('filesize_approx'),'media_type':typ,'qualities':qualities(i),'token':sign({'url':post,'source':src,'index':n,'exp':time.time()+900})}\n"""
+          new="""def safe_label(v):\n v=re.sub(r'[^A-Za-z0-9._-]+','_',str(v or '').strip().lstrip('@')).strip('._-')\n return (v[:48] or 'media')\ndef creator_name(post,i):\n for k in ('uploader_id','uploader','channel_id','channel','creator','artist','author'):\n  if i.get(k):return safe_label(i.get(k))\n parts=[x for x in urlparse(post).path.split('/') if x]\n p=platform(post)\n if p=='X / Twitter' and parts and parts[0] not in ('i','status'):return safe_label(parts[0])\n return 'instagram' if p=='Instagram' else ('reddit' if p=='Reddit' else 'media')\ndef item(post,i,n):\n fm=i.get('formats') or [];typ='video' if any(f.get('vcodec') not in (None,'none') for f in fm) or i.get('duration') or str(i.get('ext','')).lower() in ('mp4','webm','mov') else 'image';src=i.get('_download_url') or i.get('webpage_url') or i.get('url') or post;creator=creator_name(post,i)\n return {'index':n,'title':i.get('title') or f'Media {n+1}','thumbnail':i.get('thumbnail') or (src if typ=='image' else None),'duration':i.get('duration'),'width':i.get('width'),'height':i.get('height'),'filesize':i.get('filesize') or i.get('filesize_approx'),'media_type':typ,'qualities':qualities(i),'token':sign({'url':post,'source':src,'index':n,'creator':creator,'exp':time.time()+900})}\n"""
+          if old not in s: raise SystemExit('item block not found')
+          s=s.replace(old,new)
+          old2="""def download_one(p,d,mode='best',height=None,prefix='media'):\n s=p.get('source') or p['url']\n if direct_file(s):\n  ext=Path(urlparse(s).path).suffix or '.bin';t=Path(d)/(prefix+ext);r=cr.get(s,headers={'User-Agent':UA},impersonate='chrome',timeout=120)\n"""
+          new2="""def download_one(p,d,mode='best',height=None,prefix='media'):\n s=p.get('source') or p['url'];stamp=time.strftime('%Y-%m-%d_%H%M%S',time.localtime());stem=f\"{safe_label(p.get('creator') or 'media')}_{stamp}_{int(p.get('index',0))+1:02d}\"\n if direct_file(s):\n  ext=Path(urlparse(s).path).suffix or '.bin';t=Path(d)/(stem+ext);r=cr.get(s,headers={'User-Agent':UA},impersonate='chrome',timeout=120)\n"""
+          if old2 not in s: raise SystemExit('download block not found')
+          s=s.replace(old2,new2)
+          old3="""o,c=opts(True,str(Path(d)/(prefix+'-%(title).60s.%(ext)s')),fmt)"""
+          new3="""o,c=opts(True,str(Path(d)/(stem+'.%(ext)s')),fmt)"""
+          if old3 not in s: raise SystemExit('outtmpl not found')
+          s=s.replace(old3,new3)
+          old4="""fs=[x for x in Path(d).iterdir() if x.is_file() and x.name.startswith(prefix)]"""
+          new4="""fs=[x for x in Path(d).iterdir() if x.is_file() and x.name.startswith(stem)]"""
+          if old4 not in s: raise SystemExit('file scan not found')
+          s=s.replace(old4,new4)
+          p.write_text(s)
+          PY
+      - name: Commit app update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py
+          git commit -m "Use creator and timestamp download filenames"
+          git push
