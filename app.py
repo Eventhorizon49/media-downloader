@@ -156,9 +156,19 @@ def qualities(i):
   if h and f.get('vcodec') not in (None,'none') and (h not in hs or t>hs[h]['tbr']):hs[h]={'label':f'{h}p','height':h,'tbr':t}
  if not hs and i.get('height'):h=int(i['height']);hs[h]={'label':f'{h}p','height':h,'tbr':0}
  return [hs[h] for h in sorted(hs,reverse=True)][:10]
+def safe_label(v):
+ v=re.sub(r'[^A-Za-z0-9._-]+','_',str(v or '').strip().lstrip('@')).strip('._-')
+ return (v[:48] or 'media')
+def creator_name(post,i):
+ for k in ('uploader_id','uploader','channel_id','channel','creator','artist','author'):
+  if i.get(k):return safe_label(i.get(k))
+ parts=[x for x in urlparse(post).path.split('/') if x]
+ p=platform(post)
+ if p=='X / Twitter' and parts and parts[0] not in ('i','status'):return safe_label(parts[0])
+ return 'instagram' if p=='Instagram' else ('reddit' if p=='Reddit' else 'media')
 def item(post,i,n):
- fm=i.get('formats') or [];typ='video' if any(f.get('vcodec') not in (None,'none') for f in fm) or i.get('duration') or str(i.get('ext','')).lower() in ('mp4','webm','mov') else 'image';src=i.get('_download_url') or i.get('webpage_url') or i.get('url') or post
- return {'index':n,'title':i.get('title') or f'Media {n+1}','thumbnail':i.get('thumbnail') or (src if typ=='image' else None),'duration':i.get('duration'),'width':i.get('width'),'height':i.get('height'),'filesize':i.get('filesize') or i.get('filesize_approx'),'media_type':typ,'qualities':qualities(i),'token':sign({'url':post,'source':src,'index':n,'exp':time.time()+900})}
+ fm=i.get('formats') or [];typ='video' if any(f.get('vcodec') not in (None,'none') for f in fm) or i.get('duration') or str(i.get('ext','')).lower() in ('mp4','webm','mov') else 'image';src=i.get('_download_url') or i.get('webpage_url') or i.get('url') or post;creator=creator_name(post,i)
+ return {'index':n,'title':i.get('title') or f'Media {n+1}','thumbnail':i.get('thumbnail') or (src if typ=='image' else None),'duration':i.get('duration'),'width':i.get('width'),'height':i.get('height'),'filesize':i.get('filesize') or i.get('filesize_approx'),'media_type':typ,'qualities':qualities(i),'token':sign({'url':post,'source':src,'index':n,'creator':creator,'exp':time.time()+900})}
 def public_info(u,i):
  its=[item(u,x,n) for n,x in enumerate(flat(i))];return {'platform':platform(u),'title':i.get('title') or (its[0]['title'] if its else 'Media'),'count':len(its),'items':its}
 def friendly(e):
@@ -168,16 +178,16 @@ def friendly(e):
  return 422,'Could not analyze this public post right now.'
 def direct_file(s):return urlparse(s).path.lower().endswith(DIRECT_EXTS)
 def download_one(p,d,mode='best',height=None,prefix='media'):
- s=p.get('source') or p['url']
+ s=p.get('source') or p['url'];stamp=time.strftime('%Y-%m-%d_%H%M%S',time.localtime());stem=f"{safe_label(p.get('creator') or 'media')}_{stamp}_{int(p.get('index',0))+1:02d}"
  if direct_file(s):
-  ext=Path(urlparse(s).path).suffix or '.bin';t=Path(d)/(prefix+ext);r=cr.get(s,headers={'User-Agent':UA},impersonate='chrome',timeout=120)
+  ext=Path(urlparse(s).path).suffix or '.bin';t=Path(d)/(stem+ext);r=cr.get(s,headers={'User-Agent':UA},impersonate='chrome',timeout=120)
   if r.status_code!=200:raise RuntimeError(f'Direct media download failed ({r.status_code})')
   t.write_bytes(r.content);return t
- fmt='bestaudio/best' if mode=='audio' else (f'bestvideo*[height<={height}]+bestaudio/best[height<={height}]/best' if mode=='quality' and height else 'bestvideo*+bestaudio/best');o,c=opts(True,str(Path(d)/(prefix+'-%(title).60s.%(ext)s')),fmt)
+ fmt='bestaudio/best' if mode=='audio' else (f'bestvideo*[height<={height}]+bestaudio/best[height<={height}]/best' if mode=='quality' and height else 'bestvideo*+bestaudio/best');o,c=opts(True,str(Path(d)/(stem+'.%(ext)s')),fmt)
  if mode=='audio':o['postprocessors']=[{'key':'FFmpegExtractAudio','preferredcodec':'m4a','preferredquality':'0'}]
  try:
   with yt_dlp.YoutubeDL(o) as y:y.download([s])
-  fs=[x for x in Path(d).iterdir() if x.is_file() and x.name.startswith(prefix)]
+  fs=[x for x in Path(d).iterdir() if x.is_file() and x.name.startswith(stem)]
   if not fs:raise RuntimeError('Download failed')
   return max(fs,key=lambda x:x.stat().st_size)
  finally:
