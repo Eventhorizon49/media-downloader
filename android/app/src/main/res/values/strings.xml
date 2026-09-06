@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Media Downloader Private</string>
+    <string name="accessibility_description">Detect copied Instagram, X/Twitter and Reddit links and show a download prompt. Clipboard text is not stored.</string>
+</resources>
