@@ -9,11 +9,12 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="Media Downloader", version="1.0.0")
+app = FastAPI(title="Media Downloader", version="1.1.0")
 SECRET = os.getenv("TOKEN_SECRET", "dev-change-me")
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 SUPPORTED = ("instagram.com", "x.com", "twitter.com", "reddit.com", "redd.it")
 UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36"
+ROOT = Path(__file__).resolve().parent
 
 class AnalyzeRequest(BaseModel):
     url: str
@@ -184,7 +185,7 @@ def friendly_extract_error(exc: Exception):
 
 
 @app.get("/health")
-def health(): return {"ok": True, "yt_dlp": yt_dlp.version.__version__, "ffmpeg": bool(FFMPEG)}
+def health(): return {"ok": True, "yt_dlp": yt_dlp.version.__version__, "ffmpeg": bool(FFMPEG), "pwa": True}
 
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest):
@@ -226,5 +227,14 @@ def download(background_tasks: BackgroundTasks, token: str = Query(...), mode: s
             try: os.remove(c)
             except OSError: pass
 
+@app.get("/manifest.webmanifest")
+def manifest(): return FileResponse(ROOT / "manifest.webmanifest", media_type="application/manifest+json")
+
+@app.get("/sw.js")
+def service_worker(): return FileResponse(ROOT / "sw.js", media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+@app.get("/icon.svg")
+def app_icon(): return FileResponse(ROOT / "icon.svg", media_type="image/svg+xml")
+
 @app.get("/", response_class=HTMLResponse)
-def home(): return Path(__file__).with_name("index.html").read_text(encoding="utf-8")
+def home(): return (ROOT / "index.html").read_text(encoding="utf-8")
