@@ -7,11 +7,12 @@ from fastapi import BackgroundTasks,FastAPI,HTTPException,Query
 from fastapi.responses import FileResponse,HTMLResponse
 from pydantic import BaseModel
 
-app=FastAPI(title='Media Downloader',version='1.3.0');SECRET=os.getenv('TOKEN_SECRET','dev-change-me');FFMPEG=imageio_ffmpeg.get_ffmpeg_exe();ROOT=Path(__file__).resolve().parent
-SUPPORTED=('instagram.com','x.com','twitter.com','reddit.com','redd.it');UA='Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36';IMAGE_EXTS=('.jpg','.jpeg','.png','.webp','.gif')
+app=FastAPI(title='Media Downloader',version='1.4.0')
+SECRET=os.getenv('TOKEN_SECRET','dev-change-me');FFMPEG=imageio_ffmpeg.get_ffmpeg_exe();ROOT=Path(__file__).resolve().parent
+SUPPORTED=('instagram.com','x.com','twitter.com','reddit.com','redd.it');UA='MediaDownloader/1.4 (+https://media-downloader-pcbv.onrender.com) Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36';IMAGE_EXTS=('.jpg','.jpeg','.png','.webp','.gif');DIRECT_EXTS=IMAGE_EXTS+('.mp4','.mov','.webm','.m4a','.aac')
 class AnalyzeRequest(BaseModel): url:str
 class BatchRequest(BaseModel): tokens:list[str]
-def host(u): return (urlparse(u).hostname or '').lower()
+def host(u):return (urlparse(u).hostname or '').lower()
 def platform(u):
  h=host(u);return 'Instagram' if 'instagram' in h else ('Reddit' if 'reddit' in h or 'redd.it' in h else 'X / Twitter')
 def valid(u):
@@ -50,11 +51,40 @@ def flat(info):
  out=[]
  for x in e:out.extend([z for z in (x.get('entries') or []) if z] or [x])
  return out or [info]
-def x_public(u):
+
+def x_fxtwitter(u):
+ m=re.search(r'/status/(\d+)',u)
+ if not m:raise RuntimeError('X post ID not found')
+ pid=m.group(1);last=None
+ for ep in (f'https://api.fxtwitter.com/status/{pid}',f'https://api.fxtwitter.com/i/status/{pid}'):
+  try:
+   r=cr.get(ep,headers={'User-Agent':UA,'Accept':'application/json'},impersonate='chrome',timeout=30);last=r.status_code
+   if r.status_code!=200:continue
+   d=r.json();st=d.get('status') or d.get('tweet') or d
+   if not isinstance(st,dict):continue
+   media=st.get('media') or {};ordered=media.get('all') or []
+   if not ordered:ordered=(media.get('photos') or [])+(media.get('videos') or [])
+   if not ordered:continue
+   author=(st.get('author') or {}).get('name') or (st.get('author') or {}).get('screen_name') or 'X';txt=(st.get('text') or '').strip();title=f'{author} - {txt[:100]}' if txt else author;entries=[]
+   for md in ordered:
+    typ=md.get('type');src=md.get('url');w=md.get('width');h=md.get('height')
+    if typ in ('photo','mosaic_photo') and src:
+     entries.append({'title':title,'url':src,'_download_url':src,'thumbnail':src,'width':w,'height':h,'ext':(md.get('format') or Path(urlparse(src).path).suffix.lstrip('.') or 'jpg')})
+    elif typ in ('video','gif'):
+     fm=[]
+     for f in md.get('formats') or []:
+      fu=f.get('url')
+      if fu and (f.get('container') in (None,'mp4') or '.mp4' in urlparse(fu).path):fm.append({'url':fu,'ext':'mp4','vcodec':'h264','acodec':'aac','tbr':(f.get('bitrate') or 0)/1000 or None,'height':f.get('height') or h,'width':f.get('width') or w,'filesize':f.get('size')})
+     fm.sort(key=lambda f:(f.get('height') or 0,f.get('tbr') or 0),reverse=True);best=(fm[0]['url'] if fm else src)
+     if best:entries.append({'title':title,'url':best,'_download_url':best,'thumbnail':md.get('thumbnail_url'),'width':w,'height':h,'duration':md.get('duration'),'filesize':md.get('filesize'),'ext':'mp4','formats':fm})
+   if entries:return {'title':title,'entries':entries}
+  except Exception:continue
+ raise RuntimeError(f'X public metadata unavailable ({last})')
+def x_syndication(u):
  m=re.search(r'/status/(\d+)',u)
  if not m:raise RuntimeError('X post ID not found')
  r=cr.get(f'https://cdn.syndication.twimg.com/tweet-result?id={m.group(1)}&lang=en',headers={'User-Agent':UA,'Accept':'application/json'},impersonate='chrome',timeout=30)
- if r.status_code!=200:raise RuntimeError('X public metadata unavailable')
+ if r.status_code!=200:raise RuntimeError('X syndication unavailable')
  d=r.json();media=d.get('mediaDetails') or []
  if not media:raise RuntimeError('No public X media found')
  usr=d.get('user') or {};txt=(d.get('text') or '').strip();author=usr.get('name') or usr.get('screen_name') or 'X';title=f'{author} - {txt[:100]}' if txt else author;entries=[]
@@ -63,12 +93,12 @@ def x_public(u):
   if typ=='photo' and thumb:
    src=thumb+('&' if '?' in thumb else '?')+'name=orig';entries.append({'title':title,'url':src,'_download_url':src,'thumbnail':src,'width':orig.get('width'),'height':orig.get('height'),'ext':'jpg'})
   elif typ in ('video','animated_gif'):
-   vs=[v for v in ((md.get('video_info') or {}).get('variants') or []) if v.get('content_type')=='video/mp4' and v.get('url')]
-   if not vs:continue
-   vs.sort(key=lambda v:v.get('bitrate') or 0,reverse=True);best=vs[0];fm=[{'url':v['url'],'ext':'mp4','vcodec':'h264','acodec':'aac','tbr':(v.get('bitrate') or 0)/1000 or None,'height':orig.get('height'),'width':orig.get('width')} for v in vs]
-   entries.append({'title':title,'url':best['url'],'_download_url':best['url'],'thumbnail':thumb,'width':orig.get('width'),'height':orig.get('height'),'duration':((md.get('video_info') or {}).get('duration_millis') or 0)/1000 or None,'ext':'mp4','formats':fm})
+   vs=[v for v in ((md.get('video_info') or {}).get('variants') or []) if v.get('content_type')=='video/mp4' and v.get('url')];vs.sort(key=lambda v:v.get('bitrate') or 0,reverse=True)
+   if vs:
+    fm=[{'url':v['url'],'ext':'mp4','vcodec':'h264','acodec':'aac','tbr':(v.get('bitrate') or 0)/1000 or None,'height':orig.get('height'),'width':orig.get('width')} for v in vs];entries.append({'title':title,'url':vs[0]['url'],'_download_url':vs[0]['url'],'thumbnail':thumb,'width':orig.get('width'),'height':orig.get('height'),'duration':((md.get('video_info') or {}).get('duration_millis') or 0)/1000 or None,'ext':'mp4','formats':fm})
  if not entries:raise RuntimeError('No public X media found')
  return {'title':title,'entries':entries}
+
 def reddit_public(u):
  m=re.search(r'/comments/([^/?#]+)',u)
  if not m:raise RuntimeError('Reddit post ID not found')
@@ -96,30 +126,27 @@ def reddit_public(u):
  try:i=ytdlp(src)
  except:i={'formats':[],'ext':'mp4' if 'v.redd.it' in src else Path(urlparse(src).path).suffix.lstrip('.') or None}
  i=i or {'formats':[]};i.update({'title':title,'_download_url':src});i['width']=i.get('width') or rv.get('width');i['height']=i.get('height') or rv.get('height');i['duration']=i.get('duration') or rv.get('duration');return i
+
+def best_public_x(u):
+ candidates=[]
+ for fn in (x_fxtwitter,x_syndication):
+  try:candidates.append(fn(u))
+  except:pass
+ try:candidates.append(ytdlp(u))
+ except:pass
+ if not candidates:raise RuntimeError('X extraction unavailable')
+ return max(candidates,key=lambda x:len(flat(x)))
 def extract(u):
  p=platform(u)
- if p=='X / Twitter':
-  pub=None
-  try:pub=x_public(u)
-  except:pass
-  try:
-   y=ytdlp(u)
-   if pub and len(flat(y))<len(flat(pub)):return pub
-   return y
-  except:
-   if pub:return pub
-   raise
+ if p=='X / Twitter':return best_public_x(u)
  if p=='Reddit':
-  pub=None
-  try:pub=reddit_public(u)
+  candidates=[]
+  try:candidates.append(reddit_public(u))
   except:pass
-  try:
-   y=ytdlp(u)
-   if pub and len(flat(y))<len(flat(pub)):return pub
-   return y
-  except:
-   if pub:return pub
-   raise
+  try:candidates.append(ytdlp(u))
+  except:pass
+  if not candidates:raise RuntimeError('Reddit extraction unavailable')
+  return max(candidates,key=lambda x:len(flat(x)))
  return ytdlp(u)
 def qualities(i):
  hs={}
@@ -138,12 +165,12 @@ def friendly(e):
  if any(x in m for x in ('login','cookie','sign in','authentication','challenge')):return 401,'This public post is currently being served behind a platform login/session requirement.'
  if any(x in m for x in ('private','deleted','unavailable')):return 404,'This post is private, deleted, or unavailable.'
  return 422,'Could not analyze this public post right now.'
-def image_src(s):return urlparse(s).path.lower().endswith(IMAGE_EXTS)
+def direct_file(s):return urlparse(s).path.lower().endswith(DIRECT_EXTS)
 def download_one(p,d,mode='best',height=None,prefix='media'):
  s=p.get('source') or p['url']
- if image_src(s):
-  ext=Path(urlparse(s).path).suffix or '.jpg';t=Path(d)/(prefix+ext);r=cr.get(s,headers={'User-Agent':UA},impersonate='chrome',timeout=60)
-  if r.status_code!=200:raise RuntimeError('Image download failed')
+ if direct_file(s):
+  ext=Path(urlparse(s).path).suffix or ('.mp4' if 'video' in host(s) else '.bin');t=Path(d)/(prefix+ext);r=cr.get(s,headers={'User-Agent':UA},impersonate='chrome',timeout=120)
+  if r.status_code!=200:raise RuntimeError(f'Direct media download failed ({r.status_code})')
   t.write_bytes(r.content);return t
  fmt='bestaudio/best' if mode=='audio' else (f'bestvideo*[height<={height}]+bestaudio/best[height<={height}]/best' if mode=='quality' and height else 'bestvideo*+bestaudio/best');o,c=opts(True,str(Path(d)/(prefix+'-%(title).60s.%(ext)s')),fmt)
  if mode=='audio':o['postprocessors']=[{'key':'FFmpegExtractAudio','preferredcodec':'m4a','preferredquality':'0'}]
@@ -157,7 +184,7 @@ def download_one(p,d,mode='best',height=None,prefix='media'):
    try:os.remove(c)
    except:pass
 @app.get('/health')
-def health():return {'ok':True,'yt_dlp':yt_dlp.version.__version__,'ffmpeg':bool(FFMPEG),'multi_media':True,'public_sensitive_media':True}
+def health():return {'ok':True,'yt_dlp':yt_dlp.version.__version__,'ffmpeg':bool(FFMPEG),'multi_media':True,'public_sensitive_media':True,'x_fallback':'fxtwitter'}
 @app.post('/api/analyze')
 def analyze(r:AnalyzeRequest):
  u=r.url.strip()
