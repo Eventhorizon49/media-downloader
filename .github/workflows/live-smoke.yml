@@ -13,7 +13,7 @@ jobs:
           BASE: https://media-downloader-pcbv.onrender.com
         run: |
           python - <<'PY'
-          import json, os, time, urllib.request, urllib.error
+          import json, os, time, urllib.request, urllib.error, urllib.parse
           base=os.environ['BASE']
           def get(path, timeout=120):
               with urllib.request.urlopen(base+path, timeout=timeout) as r:
@@ -34,7 +34,7 @@ jobs:
           tests={
             'instagram':'https://www.instagram.com/reel/Chunk8-jurw/',
             'x':'https://twitter.com/MesoMax919/status/1575560063510810624',
-            'reddit':'https://www.reddit.com/r/videos/comments/6rrwyj/that_small_heart_attack/'
+            'reddit':'https://www.reddit.com/r/Unexpected/comments/1cl9h0u/the_insurance_claim_will_be_interesting/'
           }
           results={}
           for name,url in tests.items():
@@ -47,7 +47,6 @@ jobs:
                   body=e.read().decode(errors='replace')
                   print(name,'FAIL',e.code,body)
                   raise
-          # Exercise a real file download using the Reddit test item.
           token=results['reddit']['token']
           path='/api/download?mode=best&token='+urllib.parse.quote(token,safe='')
           status,blob=get(path,240)
