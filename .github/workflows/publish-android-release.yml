@@ -18,14 +18,14 @@ jobs:
       - name: Reconstruct signed APK
         run: |
           mkdir -p dist
-          cat release_payload/*.b64 | base64 -d > dist/Media-Downloader-Private-v1.0.apk
-          test -s dist/Media-Downloader-Private-v1.0.apk
+          cat release_payload/*.b64 | base64 -d > dist/Media-Downloader-Private-v1.1.apk
+          test -s dist/Media-Downloader-Private-v1.1.apk
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete android-v1.0 --yes --cleanup-tag || true
-          gh release create android-v1.0 dist/Media-Downloader-Private-v1.0.apk \
+          gh release delete android-v1.1 --yes --cleanup-tag || true
+          gh release create android-v1.1 dist/Media-Downloader-Private-v1.1.apk \
             --target android-private \
-            --title 'Media Downloader Private v1.0' \
-            --notes 'Signed private Android APK. Supports copied-link prompts for Instagram, X/Twitter and Reddit and uses the existing Media Downloader backend. Install by downloading the APK, allowing installs from your browser/file manager when prompted, then enabling Copy Watcher in Android Accessibility settings.'
+            --title 'Media Downloader Private v1.1' \
+            --notes 'Final signed private Android build. Copy a public Instagram, X/Twitter, or Reddit post link and a minimal floating prompt appears. Tap Download for best available quality only. Multi-media posts download every exposed item in best quality. Downloads use the same creator/username + timestamp filename rules as the web app. Enable Copy Watcher once in Android Accessibility settings.'
