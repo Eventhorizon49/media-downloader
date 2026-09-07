@@ -1,0 +1,73 @@
+name: Fix Draupnir branding assets
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-draupnir-branding.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix Draupnir logo routes, favicon and PWA icon
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json, re
+
+          # Build a square-ish icon crop from the exact embedded user-supplied logo asset.
+          logo = Path('draupnir-logo.svg').read_text(encoding='utf-8')
+          icon = re.sub(r'viewBox="0 0 222 140"', 'viewBox="0 0 82 140"', logo, count=1)
+          Path('draupnir-icon.svg').write_text(icon, encoding='utf-8')
+
+          # Serve the Draupnir assets from FastAPI. The previous broken image happened
+          # because the file existed in the repo but had no HTTP route.
+          p = Path('app.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace("app=FastAPI(title='Media Downloader',version='1.4.1')", "app=FastAPI(title='Draupnir',version='1.4.2')")
+          marker = "@app.get('/icon.svg')\ndef icon():return FileResponse(ROOT/'icon.svg',media_type='image/svg+xml')\n"
+          replacement = marker + "@app.get('/draupnir-logo.svg')\ndef draupnir_logo():return FileResponse(ROOT/'draupnir-logo.svg',media_type='image/svg+xml',headers={'Cache-Control':'public,max-age=86400'})\n@app.get('/draupnir-icon.svg')\ndef draupnir_icon():return FileResponse(ROOT/'draupnir-icon.svg',media_type='image/svg+xml',headers={'Cache-Control':'public,max-age=86400'})\n"
+          if "@app.get('/draupnir-logo.svg')" not in s:
+              if marker not in s: raise SystemExit('icon route marker not found')
+              s = s.replace(marker, replacement)
+          p.write_text(s, encoding='utf-8')
+
+          # Use Draupnir icon for browser/PWA branding and exact horizontal logo in UI.
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('<link rel="icon" href="/icon.svg">', '<link rel="icon" href="/draupnir-icon.svg"><link rel="apple-touch-icon" href="/draupnir-icon.svg">')
+          s = s.replace('src="/draupnir-logo.svg"', 'src="/draupnir-logo.svg?v=2"')
+          p.write_text(s, encoding='utf-8')
+
+          manifest = {
+            'name':'Draupnir',
+            'short_name':'Draupnir',
+            'description':'Download the best available public media quality from Instagram, X / Twitter and Reddit.',
+            'start_url':'/',
+            'scope':'/',
+            'display':'standalone',
+            'background_color':'#070b14',
+            'theme_color':'#070b14',
+            'orientation':'portrait-primary',
+            'icons':[
+              {'src':'/draupnir-icon.svg','sizes':'any','type':'image/svg+xml','purpose':'any'}
+            ]
+          }
+          Path('manifest.webmanifest').write_text(json.dumps(manifest, indent=2)+"\n", encoding='utf-8')
+
+          # Cache only stable branding shell assets; keep homepage/API network-fresh.
+          p = Path('sw.js')
+          s = p.read_text(encoding='utf-8')
+          s = re.sub(r"const CACHE='[^']+';", "const CACHE='draupnir-v5';", s)
+          s = re.sub(r"const SHELL=\[[^\]]*\];", "const SHELL=['/manifest.webmanifest','/draupnir-logo.svg','/draupnir-icon.svg'];", s)
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit fixed branding
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py index.html manifest.webmanifest sw.js draupnir-icon.svg
+          git commit -m "Serve Draupnir logo and use Draupnir home screen icon"
+          git push
