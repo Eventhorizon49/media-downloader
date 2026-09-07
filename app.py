@@ -7,7 +7,7 @@ from fastapi import BackgroundTasks,FastAPI,HTTPException,Query
 from fastapi.responses import FileResponse,HTMLResponse
 from pydantic import BaseModel
 
-app=FastAPI(title='Media Downloader',version='1.4.1')
+app=FastAPI(title='Draupnir',version='1.4.2')
 SECRET=os.getenv('TOKEN_SECRET','dev-change-me');FFMPEG=imageio_ffmpeg.get_ffmpeg_exe();ROOT=Path(__file__).resolve().parent
 SUPPORTED=('instagram.com','x.com','twitter.com','reddit.com','redd.it');UA='MediaDownloader/1.4 (+https://media-downloader-pcbv.onrender.com) Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36';IMAGE_EXTS=('.jpg','.jpeg','.png','.webp','.gif');DIRECT_EXTS=IMAGE_EXTS+('.mp4','.mov','.webm','.m4a','.aac')
 class AnalyzeRequest(BaseModel): url:str
@@ -230,5 +230,9 @@ def manifest():return FileResponse(ROOT/'manifest.webmanifest',media_type='appli
 def sw():return FileResponse(ROOT/'sw.js',media_type='application/javascript',headers={'Cache-Control':'no-cache'})
 @app.get('/icon.svg')
 def icon():return FileResponse(ROOT/'icon.svg',media_type='image/svg+xml')
+@app.get('/draupnir-logo.svg')
+def draupnir_logo():return FileResponse(ROOT/'draupnir-logo.svg',media_type='image/svg+xml',headers={'Cache-Control':'public,max-age=86400'})
+@app.get('/draupnir-icon.svg')
+def draupnir_icon():return FileResponse(ROOT/'draupnir-icon.svg',media_type='image/svg+xml',headers={'Cache-Control':'public,max-age=86400'})
 @app.get('/',response_class=HTMLResponse)
 def home():return (ROOT/'index.html').read_text(encoding='utf-8')

@@ -1,7 +1,7 @@
 {
   "name": "Draupnir",
   "short_name": "Draupnir",
-  "description": "Media downloader for Instagram, X / Twitter and Reddit.",
+  "description": "Download the best available public media quality from Instagram, X / Twitter and Reddit.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -10,10 +10,10 @@
   "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "/draupnir-icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }
