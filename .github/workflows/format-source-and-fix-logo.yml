@@ -1,0 +1,71 @@
+name: Format source and fix Draupnir logo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  format-and-fix:
+    if: ${{ !contains(github.event.head_commit.message, '[source-formatted]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install formatters
+        run: |
+          pip install black
+          npm install --global prettier
+
+      - name: Wire uploaded PNG into FastAPI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          app = Path('app.py')
+          text = app.read_text(encoding='utf-8')
+          marker = "@app.get('/draupnir-logo.svg')"
+          route = "@app.get('/draupnir-logo.png')\ndef draupnir_logo_png():\n return FileResponse(ROOT/'draupnir-logo.png',media_type='image/png',headers={'Cache-Control':'public,max-age=3600'})\n"
+          if "@app.get('/draupnir-logo.png')" not in text:
+              text = text.replace(marker, route + marker)
+          app.write_text(text, encoding='utf-8')
+
+          index = Path('index.html')
+          html = index.read_text(encoding='utf-8')
+          html = html.replace('/draupnir-logo.svg?v=9', '/draupnir-logo.png?v=10')
+          html = html.replace('/draupnir-logo.svg?v=10', '/draupnir-logo.png?v=10')
+          index.write_text(html, encoding='utf-8')
+          PY
+
+      - name: Format editable source files
+        run: |
+          black app.py
+          prettier --write index.html manifest.webmanifest sw.js
+
+      - name: Commit formatted source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py index.html manifest.webmanifest sw.js
+          if git diff --cached --quiet; then
+            echo "No source changes needed"
+          else
+            git commit -m "Format source and use uploaded Draupnir PNG [source-formatted]"
+            git push
+          fi
