@@ -1,0 +1,62 @@
+name: Rebuild Draupnir assets
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-draupnir-assets-v2.yml'
+permissions:
+  contents: write
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode embedded logo assets
+        run: |
+          python - <<'PY'
+          import re,base64,pathlib
+          for src,dst in [('draupnir-logo.svg','draupnir-logo.webp'),('draupnir-icon.svg','draupnir-icon.webp')]:
+              s=pathlib.Path(src).read_text()
+              m=re.search(r'data:image/webp;base64,([^\"]+)',s)
+              if not m: raise SystemExit(f'No embedded WebP found in {src}')
+              pathlib.Path(dst).write_bytes(base64.b64decode(m.group(1)))
+          PY
+      - name: Patch UI, PWA and routes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('index.html'); s=p.read_text()
+          s=s.replace('/draupnir-logo.svg?v=3','/draupnir-logo.webp?v=5')
+          s=s.replace('rel="icon" href="/draupnir-icon.svg"','rel="icon" href="/draupnir-icon.webp"')
+          s=s.replace('rel="apple-touch-icon" href="/draupnir-icon.svg"','rel="apple-touch-icon" href="/draupnir-icon.webp"')
+          s=s.replace('.home{min-height:calc(100vh - 44px);display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;transform:translateY(-10vh)}','.home{min-height:calc(100vh - 44px);display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;transform:translateY(-7vh)}')
+          s=s.replace('.brandrow{display:flex;align-items:center;justify-content:center;margin-bottom:4px;width:100%}', '.brandrow{display:flex;align-items:center;justify-content:center;margin-bottom:22px;width:100%}')
+          s=s.replace('.brandlogo{width:min(92vw,560px);height:auto;display:block;', '.brandlogo{width:min(88vw,540px);height:auto;display:block;')
+          s=s.replace('.home{transform:translateY(-11vh)}','.home{transform:translateY(-8vh)}')
+          s=s.replace('.brandrow{margin-bottom:2px}', '.brandrow{margin-bottom:18px}')
+          s=s.replace('.brandlogo{width:min(92vw,520px)}', '.brandlogo{width:min(88vw,500px)}')
+          p.write_text(s)
+
+          p=Path('manifest.webmanifest'); s=p.read_text()
+          s=s.replace('"src": "/draupnir-icon.svg"','"src": "/draupnir-icon.webp"')
+          s=s.replace('"sizes": "any"','"sizes": "512x512"')
+          s=s.replace('"type": "image/svg+xml"','"type": "image/webp"')
+          p.write_text(s)
+
+          p=Path('app.py'); s=p.read_text()
+          marker="@app.get('/icon.svg')\ndef icon():return FileResponse(ROOT/'icon.svg',media_type='image/svg+xml')"
+          replacement=marker+"\n@app.get('/draupnir-logo.webp')\ndef draupnir_logo_webp():return FileResponse(ROOT/'draupnir-logo.webp',media_type='image/webp',headers={'Cache-Control':'public, max-age=86400'})\n@app.get('/draupnir-icon.webp')\ndef draupnir_icon_webp():return FileResponse(ROOT/'draupnir-icon.webp',media_type='image/webp',headers={'Cache-Control':'public, max-age=86400'})"
+          if "draupnir_logo_webp" not in s:
+              if marker not in s: raise SystemExit('app.py route marker not found')
+              s=s.replace(marker,replacement)
+          p.write_text(s)
+
+          p=Path('sw.js'); s=p.read_text().replace('media-downloader-v4','draupnir-v6').replace('media-downloader-v5','draupnir-v6')
+          p.write_text(s)
+          PY
+      - name: Commit rebuilt assets
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add draupnir-logo.webp draupnir-icon.webp index.html manifest.webmanifest app.py sw.js
+          git commit -m 'Serve Draupnir logo as direct WebP and normalize spacing' || exit 0
+          git push
