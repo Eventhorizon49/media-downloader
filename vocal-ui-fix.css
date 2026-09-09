@@ -1,0 +1,98 @@
+/* Lead Vocal Extractor upload-card fix */
+#vocalCard {
+  width: 100%;
+  max-width: 620px;
+  overflow: hidden;
+}
+
+#vocalCard .drop {
+  display: flex;
+  width: 100%;
+  min-height: 142px;
+  padding: 24px 18px;
+  border: 1px dashed #415274;
+  border-radius: 18px;
+  background: #0a1120;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  text-align: center;
+  overflow: hidden;
+}
+
+#vocalCard .drop strong {
+  display: block;
+  margin: 0;
+  color: #f8faff;
+  font-size: 18px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+#vocalCard .drop span {
+  display: block;
+  max-width: 100%;
+  margin: 0;
+  color: #8793af;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+#audioFile {
+  display: none !important;
+}
+
+#vocalCard .file-name {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-height: 20px;
+  margin: 12px 0 0;
+  padding: 0 4px;
+  color: #cbd5ee;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#vocalCard #extractBtn {
+  margin-top: 12px;
+}
+
+#vocalCard .vocal-status,
+#vocalCard .error,
+#vocalCard .hint {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+  #vocalCard {
+    padding: 16px;
+    border-radius: 21px;
+  }
+
+  #vocalCard .drop {
+    min-height: 128px;
+    padding: 22px 14px;
+    border-radius: 16px;
+  }
+
+  #vocalCard .drop strong {
+    font-size: 17px;
+  }
+
+  #vocalCard .drop span {
+    font-size: 12px;
+  }
+
+  #vocalCard .file-name {
+    font-size: 12px;
+  }
+}
