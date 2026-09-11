@@ -16,7 +16,7 @@ jobs:
         with:
           ref: main
       - name: Update backend and UI
-        shell: python
+        shell: python {0}
         run: |
           from pathlib import Path
 
@@ -96,8 +96,6 @@ def best_instagram(u):
         if not candidates:
             raise RuntimeError("Instagram profile picture unavailable")
         return max(candidates, key=lambda x: len(flat(x)))
-    # Posts, reels and story URLs use yt-dlp. Stories may require the configured
-    # Instagram cookie session even when the account itself is public.
     return ytdlp(u)
 
 '''
@@ -127,7 +125,6 @@ def best_instagram(u):
           index = Path('index.html')
           h = index.read_text()
           h = h.replace('Paste a public post link.', 'Paste a public post, story, or Instagram profile link.')
-          h = h.replace('placeholder="Paste Instagram, X or Reddit link"', 'placeholder="Paste Instagram, X or Reddit link"')
           h = h.replace('<div class="hint">Videos · images · carousels</div>', '<div class="hint">Videos · images · carousels · Instagram stories · profile pictures</div>')
           index.write_text(h)
 
@@ -147,5 +144,3 @@ def best_instagram(u):
             git commit -m "Add Instagram profile picture and story downloads"
             git push origin main
           fi
-
-# Trigger feature application
