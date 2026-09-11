@@ -7,7 +7,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="Draupnir", version="1.4.2")
+app = FastAPI(title="Draupnir", version="1.5.0")
 SECRET = os.getenv("TOKEN_SECRET", "dev-change-me")
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 ROOT = Path(__file__).resolve().parent
@@ -431,8 +431,78 @@ def best_public_x(u):
     return max(candidates, key=lambda x: len(flat(x)))
 
 
+def instagram_url_type(u):
+    parts = [x for x in urlparse(u).path.split("/") if x]
+    if not parts:
+        return "unknown"
+    if parts[0] == "stories":
+        return "story"
+    if parts[0] in ("p", "reel", "reels", "tv"):
+        return "post"
+    return "profile"
+
+
+def instagram_profile_picture(u):
+    parts = [x for x in urlparse(u).path.split("/") if x]
+    if not parts or parts[0] in ("p", "reel", "reels", "tv", "stories"):
+        raise RuntimeError("Instagram profile URL not found")
+    username = parts[0].lstrip("@")
+    page = f"https://www.instagram.com/{username}/"
+    r = cr.get(
+        page,
+        headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+        impersonate="chrome",
+        timeout=30,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Instagram profile unavailable ({r.status_code})")
+    html = r.text
+    src = None
+    for pat in (
+        r'"profile_pic_url_hd":"([^"]+)"',
+        r'"profile_pic_url":"([^"]+)"',
+        r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"',
+    ):
+        m = re.search(pat, html, re.I)
+        if m:
+            src = m.group(1)
+            break
+    if not src:
+        raise RuntimeError("Instagram profile picture unavailable")
+    src = src.replace("\u0026", "&").replace("\/", "/").replace("&amp;", "&")
+    return {
+        "title": f"@{username} profile picture",
+        "uploader_id": username,
+        "url": src,
+        "_download_url": src,
+        "thumbnail": src,
+        "ext": Path(urlparse(src).path).suffix.lstrip(".") or "jpg",
+    }
+
+
+def best_instagram(u):
+    kind = instagram_url_type(u)
+    if kind == "profile":
+        candidates = []
+        for fn in (instagram_profile_picture, ytdlp):
+            try:
+                candidates.append(fn(u))
+            except Exception:
+                pass
+        if not candidates:
+            raise RuntimeError("Instagram profile picture unavailable")
+        return max(candidates, key=lambda x: len(flat(x)))
+    return ytdlp(u)
+
+
 def extract(u):
     p = platform(u)
+    if p == "Instagram":
+        return best_instagram(u)
     if p == "X / Twitter":
         return best_public_x(u)
     if p == "Reddit":
@@ -516,6 +586,7 @@ def item(post, i, n):
                 "source": src,
                 "index": n,
                 "creator": creator,
+                "direct": bool(i.get("_download_url") and typ == "image"),
                 "exp": time.time() + 900,
             }
         ),
@@ -554,8 +625,8 @@ def download_one(p, d, mode="best", height=None, prefix="media"):
     s = p.get("source") or p["url"]
     stamp = time.strftime("%Y-%m-%d_%H%M%S", time.localtime())
     stem = f"{safe_label(p.get('creator') or 'media')}_{stamp}_{int(p.get('index',0))+1:02d}"
-    if direct_file(s):
-        ext = Path(urlparse(s).path).suffix or ".bin"
+    if p.get("direct") or direct_file(s):
+        ext = Path(urlparse(s).path).suffix or (".jpg" if p.get("direct") else ".bin")
         t = Path(d) / (stem + ext)
         r = cr.get(s, headers={"User-Agent": UA}, impersonate="chrome", timeout=120)
         if r.status_code != 200:
@@ -604,6 +675,8 @@ def health():
         "multi_media": True,
         "public_sensitive_media": True,
         "x_fallback": "fxtwitter+syndication",
+        "instagram_profile_picture": True,
+        "instagram_story": True,
     }
 
 
