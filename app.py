@@ -7,7 +7,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="Draupnir", version="1.5.0")
+app = FastAPI(title="Draupnir", version="1.5.1")
 SECRET = os.getenv("TOKEN_SECRET", "dev-change-me")
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 ROOT = Path(__file__).resolve().parent
@@ -72,16 +72,48 @@ def unsign(t):
         raise HTTPException(410, "Download session expired. Analyze the link again.")
 
 
+def instagram_auth_configured():
+    return bool(
+        os.getenv("INSTAGRAM_COOKIES_B64")
+        or os.getenv("YTDLP_COOKIES_B64")
+        or os.getenv("INSTAGRAM_SESSIONID")
+    )
+
+
 def cookie_file():
-    v = os.getenv("YTDLP_COOKIES_B64")
-    if not v:
+    for key in ("INSTAGRAM_COOKIES_B64", "YTDLP_COOKIES_B64"):
+        v = os.getenv(key)
+        if not v:
+            continue
+        try:
+            f = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+            f.write(base64.b64decode(v))
+            f.close()
+            return f.name
+        except Exception:
+            pass
+
+    sessionid = os.getenv("INSTAGRAM_SESSIONID")
+    if not sessionid:
         return None
+    csrf = os.getenv("INSTAGRAM_CSRFTOKEN", "")
+    ds_user_id = os.getenv("INSTAGRAM_DS_USER_ID", "")
     try:
+        rows = ["# Netscape HTTP Cookie File"]
+        rows.append(
+            ".instagram.com\tTRUE\t/\tTRUE\t2147483647\tsessionid\t" + sessionid
+        )
+        if csrf:
+            rows.append(".instagram.com\tTRUE\t/\tTRUE\t2147483647\tcsrftoken\t" + csrf)
+        if ds_user_id:
+            rows.append(
+                ".instagram.com\tTRUE\t/\tTRUE\t2147483647\tds_user_id\t" + ds_user_id
+            )
         f = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-        f.write(base64.b64decode(v))
+        f.write(("\n".join(rows) + "\n").encode())
         f.close()
         return f.name
-    except:
+    except Exception:
         return None
 
 
@@ -95,7 +127,7 @@ def opts(download=False, out=None, fmt=None):
         "retries": 3,
         "fragment_retries": 3,
         "concurrent_fragment_downloads": 4,
-        "http_headers": {"User-Agent": UA},
+        "http_headers": {"User-Agent": os.getenv("INSTAGRAM_USER_AGENT") or UA},
     }
     c = cookie_file()
     if c:
@@ -541,6 +573,10 @@ def best_instagram(u):
         if not candidates:
             raise RuntimeError("Instagram profile picture unavailable")
         return max(candidates, key=lambda x: len(flat(x)))
+    if kind == "story" and not instagram_auth_configured():
+        raise RuntimeError(
+            "Instagram Story requires an authenticated Instagram session cookie"
+        )
     return ytdlp(u)
 
 
@@ -655,7 +691,7 @@ def friendly(e):
     ):
         return (
             401,
-            "This public post is currently being served behind a platform login/session requirement.",
+            "Instagram Story access needs an authenticated Instagram session on the server. Reconnect the Instagram session and try again.",
         )
     if any(x in m for x in ("private", "deleted", "unavailable")):
         return 404, "This post is private, deleted, or unavailable."
@@ -722,6 +758,7 @@ def health():
         "x_fallback": "fxtwitter+syndication",
         "instagram_profile_picture": True,
         "instagram_story": True,
+        "instagram_auth_configured": instagram_auth_configured(),
     }
 
 
