@@ -1,0 +1,191 @@
+name: Apply memory-safe large download fix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/optimize-large-downloads-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Patch backend
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('app.py')
+          s = p.read_text()
+
+          s = s.replace(
+              'import base64, hashlib, hmac, json, os, re, shutil, tempfile, time, zipfile',
+              'import base64, hashlib, hmac, json, os, re, shutil, tempfile, threading, time, zipfile',
+              1,
+          )
+          s = s.replace(
+              'app = FastAPI(title="Draupnir", version="1.5.1")',
+              'app = FastAPI(title="Draupnir", version="1.5.2")',
+              1,
+          )
+          marker = 'DIRECT_EXTS = IMAGE_EXTS + (".mp4", ".mov", ".webm", ".m4a", ".aac")\n'
+          if 'DOWNLOAD_SLOT = threading.BoundedSemaphore(1)' not in s:
+              s = s.replace(
+                  marker,
+                  marker + '\n# Keep heavy media work serialized on the small Render instance.\nDOWNLOAD_SLOT = threading.BoundedSemaphore(1)\nSTREAM_CHUNK = 1024 * 1024\n',
+                  1,
+              )
+          s = s.replace('"concurrent_fragment_downloads": 4,', '"concurrent_fragment_downloads": 1,', 1)
+
+          start = s.index('def download_one(')
+          end = s.index('\n\n@app.get("/health")', start)
+          new_download_one = '''def download_one(p, d, mode="best", height=None, prefix="media"):
+              s = p.get("source") or p["url"]
+              stamp = time.strftime("%Y-%m-%d_%H%M%S", time.localtime())
+              stem = f"{safe_label(p.get('creator') or 'media')}_{stamp}_{int(p.get('index',0))+1:02d}"
+              if p.get("direct") or direct_file(s):
+                  ext = Path(urlparse(s).path).suffix or (".jpg" if p.get("direct") else ".bin")
+                  t = Path(d) / (stem + ext)
+                  r = cr.get(
+                      s,
+                      headers={"User-Agent": UA},
+                      impersonate="chrome",
+                      timeout=300,
+                      stream=True,
+                  )
+                  try:
+                      if r.status_code != 200:
+                          raise RuntimeError(f"Direct media download failed ({r.status_code})")
+                      with t.open("wb") as out:
+                          for chunk in r.iter_content(chunk_size=STREAM_CHUNK):
+                              if chunk:
+                                  out.write(chunk)
+                      return t
+                  finally:
+                      try:
+                          r.close()
+                      except Exception:
+                          pass
+              fmt = (
+                  "bestaudio/best"
+                  if mode == "audio"
+                  else (
+                      f"bestvideo*[height<={height}]+bestaudio/best[height<={height}]/best"
+                      if mode == "quality" and height
+                      else "bestvideo*+bestaudio/best"
+                  )
+              )
+              o, c = opts(True, str(Path(d) / (stem + ".%(ext)s")), fmt)
+              if mode == "audio":
+                  o["postprocessors"] = [
+                      {
+                          "key": "FFmpegExtractAudio",
+                          "preferredcodec": "m4a",
+                          "preferredquality": "0",
+                      }
+                  ]
+              try:
+                  with yt_dlp.YoutubeDL(o) as y:
+                      y.download([s])
+                  fs = [x for x in Path(d).iterdir() if x.is_file() and x.name.startswith(stem)]
+                  if not fs:
+                      raise RuntimeError("Download failed")
+                  return max(fs, key=lambda x: x.stat().st_size)
+              finally:
+                  if c:
+                      try:
+                          os.remove(c)
+                      except Exception:
+                          pass
+          '''
+          s = s[:start] + new_download_one + s[end:]
+
+          ds = s.index('@app.get("/api/download")')
+          de = s.index('\n\n@app.post("/api/download-batch")', ds)
+          new_single = '''@app.get("/api/download")
+          def download(
+              background_tasks: BackgroundTasks,
+              token: str = Query(...),
+              mode: str = Query("best", pattern="^(best|audio|quality)$"),
+              height: int | None = Query(None, ge=1, le=4320),
+          ):
+              p = unsign(token)
+              d = tempfile.mkdtemp(prefix="media-dl-")
+              try:
+                  with DOWNLOAD_SLOT:
+                      t = download_one(p, d, mode, height, "media")
+                  background_tasks.add_task(shutil.rmtree, d, True)
+                  return FileResponse(t, filename=t.name, media_type="application/octet-stream")
+              except Exception as e:
+                  shutil.rmtree(d, ignore_errors=True)
+                  c, x = friendly(e)
+                  raise HTTPException(c, x)
+          '''
+          s = s[:ds] + new_single + s[de:]
+
+          bs = s.index('@app.post("/api/download-batch")')
+          be = s.index('\n\n@app.get("/manifest.webmanifest")', bs)
+          new_batch = '''@app.post("/api/download-batch")
+          def batch(r: BatchRequest, background_tasks: BackgroundTasks):
+              if not r.tokens or len(r.tokens) > 30:
+                  raise HTTPException(400, "Nothing to download.")
+              d = tempfile.mkdtemp(prefix="media-batch-")
+              fs = []
+              try:
+                  with DOWNLOAD_SLOT:
+                      for n, t in enumerate(r.tokens):
+                          fs.append(
+                              download_one(unsign(t), d, "best", None, f"media-{n+1:02d}")
+                          )
+                  z = Path(d) / "media-downloader.zip"
+                  with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED, allowZip64=True) as a:
+                      for f in fs:
+                          a.write(f, arcname=f.name)
+                  background_tasks.add_task(shutil.rmtree, d, True)
+                  return FileResponse(
+                      z, filename="media-downloader.zip", media_type="application/zip"
+                  )
+              except Exception as e:
+                  shutil.rmtree(d, ignore_errors=True)
+                  c, x = friendly(e)
+                  raise HTTPException(c, x)
+          '''
+          s = s[:bs] + new_batch + s[be:]
+
+          if '"memory_safe_large_downloads": True,' not in s:
+              s = s.replace(
+                  '"instagram_auth_configured": instagram_auth_configured(),',
+                  '"instagram_auth_configured": instagram_auth_configured(),\n        "memory_safe_large_downloads": True,\n        "download_concurrency": 1,',
+                  1,
+              )
+
+          s = s.replace(
+              'ROOT / "draupnir-icon.svg",\n        media_type="image/svg+xml",',
+              'ROOT / "draupnir-logo.png",\n        media_type="image/png",',
+              1,
+          )
+          p.write_text(s)
+
+          manifest = Path('manifest.webmanifest')
+          if manifest.exists():
+              manifest.write_text(manifest.read_text().replace('/draupnir-icon.svg', '/draupnir-logo.png'))
+
+      - name: Validate and format
+        run: |
+          python -m py_compile app.py
+          python -m pip install --quiet black
+          black app.py
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py manifest.webmanifest
+          git commit -m "Optimize large Twitter downloads for low memory"
+          git push origin main
