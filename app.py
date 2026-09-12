@@ -7,7 +7,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="Draupnir", version="1.5.2")
+app = FastAPI(title="Draupnir", version="1.5.3")
 SECRET = os.getenv("TOKEN_SECRET", "dev-change-me")
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 ROOT = Path(__file__).resolve().parent
@@ -706,6 +706,24 @@ def direct_file(s):
     return urlparse(s).path.lower().endswith(DIRECT_EXTS)
 
 
+def release_download_slot_and_cleanup(path):
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    finally:
+        try:
+            DOWNLOAD_SLOT.release()
+        except ValueError:
+            pass
+
+
+@app.get("/api/download-state")
+def download_state():
+    acquired = DOWNLOAD_SLOT.acquire(blocking=False)
+    if acquired:
+        DOWNLOAD_SLOT.release()
+    return {"busy": not acquired}
+
+
 def download_one(p, d, mode="best", height=None, prefix="media"):
     s = p.get("source") or p["url"]
     stamp = time.strftime("%Y-%m-%d_%H%M%S", time.localtime())
@@ -780,6 +798,7 @@ def health():
         "instagram_auth_configured": instagram_auth_configured(),
         "memory_safe_large_downloads": True,
         "download_concurrency": 1,
+        "single_download_guard": True,
     }
 
 
@@ -807,13 +826,19 @@ def download(
 ):
     p = unsign(token)
     d = tempfile.mkdtemp(prefix="media-dl-")
+    acquired = DOWNLOAD_SLOT.acquire(blocking=False)
+    if not acquired:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(
+            409,
+            "Another download is already running. This download was stopped to protect memory. Try again after the current download finishes.",
+        )
     try:
-        with DOWNLOAD_SLOT:
-            t = download_one(p, d, mode, height, "media")
-        background_tasks.add_task(shutil.rmtree, d, True)
+        t = download_one(p, d, mode, height, "media")
+        background_tasks.add_task(release_download_slot_and_cleanup, d)
         return FileResponse(t, filename=t.name, media_type="application/octet-stream")
     except Exception as e:
-        shutil.rmtree(d, ignore_errors=True)
+        release_download_slot_and_cleanup(d)
         c, x = friendly(e)
         raise HTTPException(c, x)
 
@@ -824,20 +849,26 @@ def batch(r: BatchRequest, background_tasks: BackgroundTasks):
         raise HTTPException(400, "Nothing to download.")
     d = tempfile.mkdtemp(prefix="media-batch-")
     fs = []
+    acquired = DOWNLOAD_SLOT.acquire(blocking=False)
+    if not acquired:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(
+            409,
+            "Another download is already running. This download was stopped to protect memory. Try again after the current download finishes.",
+        )
     try:
-        with DOWNLOAD_SLOT:
-            for n, t in enumerate(r.tokens):
-                fs.append(download_one(unsign(t), d, "best", None, f"media-{n+1:02d}"))
+        for n, t in enumerate(r.tokens):
+            fs.append(download_one(unsign(t), d, "best", None, f"media-{n+1:02d}"))
         z = Path(d) / "media-downloader.zip"
         with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED, allowZip64=True) as a:
             for f in fs:
                 a.write(f, arcname=f.name)
-        background_tasks.add_task(shutil.rmtree, d, True)
+        background_tasks.add_task(release_download_slot_and_cleanup, d)
         return FileResponse(
             z, filename="media-downloader.zip", media_type="application/zip"
         )
     except Exception as e:
-        shutil.rmtree(d, ignore_errors=True)
+        release_download_slot_and_cleanup(d)
         c, x = friendly(e)
         raise HTTPException(c, x)
 

@@ -183,6 +183,31 @@
         font-size: 12px;
         color: #6f7d9d;
       }
+      .toast {
+        display: none;
+        position: fixed;
+        left: 50%;
+        bottom: max(22px, env(safe-area-inset-bottom));
+        transform: translateX(-50%);
+        width: min(calc(100% - 28px), 560px);
+        z-index: 1000;
+        padding: 13px 16px;
+        border-radius: 14px;
+        background: #172033f5;
+        border: 1px solid #405077;
+        box-shadow: 0 16px 48px #0009;
+        color: #eef3ff;
+        font-size: 14px;
+        text-align: center;
+      }
+      .toast.show {
+        display: block;
+        animation: toastIn 0.18s ease-out;
+      }
+      @keyframes toastIn {
+        from { opacity: 0; transform: translate(-50%, 8px); }
+        to { opacity: 1; transform: translate(-50%, 0); }
+      }
       .error {
         display: none;
         color: #ffbeb9;
@@ -433,9 +458,6 @@
             ><span class="chip">X / Twitter</span
             ><span class="chip">Reddit</span>
           </div>
-          <div class="hint">
-            Videos · images · carousels · Instagram stories · profile pictures
-          </div>
           <div id="err" class="error"></div>
         </div>
       </section>
@@ -475,6 +497,7 @@
         <div class="small">Swipe or use arrows to view each media item.</div>
       </section>
     </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script>
       let data = null,
         idx = 0,
@@ -492,6 +515,24 @@
               '"': "&quot;",
             })[c],
         );
+      }
+      let toastTimer = null;
+      function showToast(s) {
+        const t = $("toast");
+        t.textContent = s;
+        t.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => t.classList.remove("show"), 4200);
+      }
+      async function downloadBusy() {
+        try {
+          const r = await fetch("/api/download-state", { cache: "no-store" });
+          if (!r.ok) return false;
+          const d = await r.json();
+          return !!d.busy;
+        } catch {
+          return false;
+        }
       }
       function showErr(s) {
         $("err").textContent = s;
@@ -605,7 +646,11 @@
         idx = i;
         renderCurrent();
       }
-      function downloadCurrent() {
+      async function downloadCurrent() {
+        if (await downloadBusy()) {
+          showToast("Another download is already running. This one has been stopped to protect memory. Try again when the current download finishes.");
+          return;
+        }
         let it = data.items[idx],
           v = $("quality").value,
           mode = "best",
@@ -631,6 +676,10 @@
           });
           if (!r.ok) {
             let d = await r.json().catch(() => ({}));
+            if (r.status === 409) {
+              showToast(d.detail || "Another download is already running. Try again when it finishes.");
+              return;
+            }
             throw new Error(d.detail || "Could not prepare download.");
           }
           let b = await r.blob(),
@@ -670,6 +719,11 @@
         },
         { passive: true },
       );
+      addEventListener("load", async () => {
+        if (await downloadBusy()) {
+          showToast("A download is already running. New downloads are temporarily blocked to protect memory.");
+        }
+      });
       if ("serviceWorker" in navigator)
         addEventListener("load", () =>
           navigator.serviceWorker.register("/sw.js").catch(() => {}),
