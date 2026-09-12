@@ -3,8 +3,7 @@ from pathlib import Path
 app = Path("app.py")
 s = app.read_text(encoding="utf-8")
 
-if "def instagram_profile_picture(" not in s:
-    block = '''
+block = '''
 def instagram_url_type(u):
     parts = [x for x in urlparse(u).path.split("/") if x]
     if not parts:
@@ -21,13 +20,58 @@ def instagram_profile_picture(u):
     if not parts or parts[0] in ("p", "reel", "reels", "tv", "stories"):
         raise RuntimeError("Instagram profile URL not found")
     username = parts[0].lstrip("@")
+
+    api_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": f"https://www.instagram.com/{username}/",
+        "Origin": "https://www.instagram.com",
+        "X-IG-App-ID": "936619743392459",
+        "X-ASBD-ID": "198387",
+    }
+
+    # Prefer Instagram's public web-profile JSON endpoint. It is more reliable
+    # than scraping the profile HTML and directly exposes the HD avatar URL.
+    for endpoint in (
+        f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
+        f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}",
+    ):
+        try:
+            r = cr.get(
+                endpoint,
+                headers=api_headers,
+                impersonate="chrome",
+                timeout=30,
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            user = ((data or {}).get("data") or {}).get("user") or {}
+            src = user.get("profile_pic_url_hd") or user.get("profile_pic_url")
+            if src:
+                return {
+                    "title": f"@{username} profile picture",
+                    "uploader_id": username,
+                    "url": src,
+                    "_download_url": src,
+                    "thumbnail": src,
+                    "width": None,
+                    "height": None,
+                    "ext": Path(urlparse(src).path).suffix.lstrip(".") or "jpg",
+                }
+        except Exception:
+            pass
+
+    # Fallback: scrape the public profile HTML for embedded avatar metadata.
     page = f"https://www.instagram.com/{username}/"
     r = cr.get(
         page,
         headers={
-            "User-Agent": UA,
+            "User-Agent": api_headers["User-Agent"],
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.instagram.com/",
         },
         impersonate="chrome",
         timeout=30,
@@ -37,9 +81,9 @@ def instagram_profile_picture(u):
     html = r.text
     src = None
     for pat in (
-        r'"profile_pic_url_hd":"([^"]+)"',
-        r'"profile_pic_url":"([^"]+)"',
-        r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"',
+        r'"profile_pic_url_hd":"([^\"]+)"',
+        r'"profile_pic_url":"([^\"]+)"',
+        r'<meta[^>]+property="og:image"[^>]+content="([^\"]+)"',
     ):
         m = re.search(pat, html, re.I)
         if m:
@@ -73,7 +117,13 @@ def best_instagram(u):
     return ytdlp(u)
 
 '''
+
+if "def instagram_profile_picture(" not in s:
     s = s.replace("\ndef extract(u):\n", "\n" + block + "def extract(u):\n", 1)
+else:
+    start = s.index("def instagram_url_type(u):")
+    end = s.index("def extract(u):", start)
+    s = s[:start] + block.lstrip("\n") + s[end:]
 
 old = '''def extract(u):
     p = platform(u)
