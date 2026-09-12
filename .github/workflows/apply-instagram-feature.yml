@@ -33,6 +33,8 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Add Instagram profile picture and story downloads"
+            git commit -m "Harden Instagram profile picture downloads"
             git push origin main
           fi
+
+# trigger: hardened-profile-extractor-v2
