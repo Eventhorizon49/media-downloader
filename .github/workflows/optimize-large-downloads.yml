@@ -20,6 +20,7 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
 
           p = Path('app.py')
           s = p.read_text()
@@ -37,6 +38,8 @@ jobs:
 
           marker = 'DIRECT_EXTS = IMAGE_EXTS + (".mp4", ".mov", ".webm", ".m4a", ".aac")\n'
           if 'DOWNLOAD_SLOT = threading.BoundedSemaphore(1)' not in s:
+              if marker not in s:
+                  raise SystemExit('DIRECT_EXTS marker not found')
               s = s.replace(
                   marker,
                   marker + '\n# The free Render instance has tight RAM. Serialize heavy media jobs so\n# two large downloads/FFmpeg merges cannot exhaust memory at the same time.\nDOWNLOAD_SLOT = threading.BoundedSemaphore(1)\nSTREAM_CHUNK = 1024 * 1024\n',
@@ -45,70 +48,65 @@ jobs:
 
           s = s.replace('"concurrent_fragment_downloads": 4,', '"concurrent_fragment_downloads": 1,', 1)
 
-          old_direct = '''        r = cr.get(s, headers={"User-Agent": UA}, impersonate="chrome", timeout=120)
-          if r.status_code != 200:
-              raise RuntimeError(f"Direct media download failed ({r.status_code})")
-          t.write_bytes(r.content)
-          return t'''
-          new_direct = '''        r = cr.get(
-              s,
-              headers={"User-Agent": UA},
-              impersonate="chrome",
-              timeout=300,
-              stream=True,
+          pattern = re.compile(
+              r'(?P<i>\s*)r = cr\.get\(s, headers=\{"User-Agent": UA\}, impersonate="chrome", timeout=120\)\n'
+              r'(?P=i)if r\.status_code != 200:\n'
+              r'(?P=i)    raise RuntimeError\(f"Direct media download failed \(\{r\.status_code\}\)"\)\n'
+              r'(?P=i)t\.write_bytes\(r\.content\)\n'
+              r'(?P=i)return t'
           )
-          try:
-              if r.status_code != 200:
-                  raise RuntimeError(f"Direct media download failed ({r.status_code})")
-              with t.open("wb") as out:
-                  for chunk in r.iter_content(chunk_size=STREAM_CHUNK):
-                      if chunk:
-                          out.write(chunk)
-              return t
-          finally:
-              try:
-                  r.close()
-              except Exception:
-                  pass'''
-          if old_direct not in s:
+          m = pattern.search(s)
+          if not m:
               raise SystemExit('direct download block not found')
-          s = s.replace(old_direct, new_direct, 1)
+          i = m.group('i')
+          replacement = (
+              f'{i}r = cr.get(\n'
+              f'{i}    s,\n'
+              f'{i}    headers={{"User-Agent": UA}},\n'
+              f'{i}    impersonate="chrome",\n'
+              f'{i}    timeout=300,\n'
+              f'{i}    stream=True,\n'
+              f'{i})\n'
+              f'{i}try:\n'
+              f'{i}    if r.status_code != 200:\n'
+              f'{i}        raise RuntimeError(f"Direct media download failed ({{r.status_code}})")\n'
+              f'{i}    with t.open("wb") as out:\n'
+              f'{i}        for chunk in r.iter_content(chunk_size=STREAM_CHUNK):\n'
+              f'{i}            if chunk:\n'
+              f'{i}                out.write(chunk)\n'
+              f'{i}    return t\n'
+              f'{i}finally:\n'
+              f'{i}    try:\n'
+              f'{i}        r.close()\n'
+              f'{i}    except Exception:\n'
+              f'{i}        pass'
+          )
+          s = s[:m.start()] + replacement + s[m.end():]
 
-          old_download = '''    try:
-          t = download_one(p, d, mode, height, "media")
-          background_tasks.add_task(shutil.rmtree, d, True)
-          return FileResponse(t, filename=t.name, media_type="application/octet-stream")'''
-          new_download = '''    try:
-          with DOWNLOAD_SLOT:
-              t = download_one(p, d, mode, height, "media")
-          background_tasks.add_task(shutil.rmtree, d, True)
-          return FileResponse(t, filename=t.name, media_type="application/octet-stream")'''
-          if old_download not in s:
-              raise SystemExit('download endpoint block not found')
-          s = s.replace(old_download, new_download, 1)
+          needle = '        t = download_one(p, d, mode, height, "media")'
+          if needle not in s:
+              raise SystemExit('single download call not found')
+          s = s.replace(
+              needle,
+              '        with DOWNLOAD_SLOT:\n            t = download_one(p, d, mode, height, "media")',
+              1,
+          )
 
-          old_batch = '''    try:
-          for n, t in enumerate(r.tokens):
-              fs.append(download_one(unsign(t), d, "best", None, f"media-{n+1:02d}"))
-          z = Path(d) / "media-downloader.zip"
-          with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as a:
-              for f in fs:
-                  a.write(f, arcname=f.name)'''
-          new_batch = '''    try:
-          with DOWNLOAD_SLOT:
-              for n, t in enumerate(r.tokens):
-                  fs.append(
-                      download_one(unsign(t), d, "best", None, f"media-{n+1:02d}")
-                  )
-          z = Path(d) / "media-downloader.zip"
-          # Video/image files are already compressed. ZIP_STORED avoids wasting RAM/CPU
-          # recompressing large media while keeping the Download all behavior intact.
-          with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED, allowZip64=True) as a:
-              for f in fs:
-                  a.write(f, arcname=f.name)'''
-          if old_batch not in s:
-              raise SystemExit('batch endpoint block not found')
-          s = s.replace(old_batch, new_batch, 1)
+          old_loop = '''        for n, t in enumerate(r.tokens):
+            fs.append(download_one(unsign(t), d, "best", None, f"media-{n+1:02d}"))'''
+          new_loop = '''        with DOWNLOAD_SLOT:
+            for n, t in enumerate(r.tokens):
+                fs.append(
+                    download_one(unsign(t), d, "best", None, f"media-{n+1:02d}")
+                )'''
+          if old_loop not in s:
+              raise SystemExit('batch loop not found')
+          s = s.replace(old_loop, new_loop, 1)
+          s = s.replace(
+              'with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as a:',
+              'with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED, allowZip64=True) as a:',
+              1,
+          )
 
           if '"memory_safe_large_downloads": True,' not in s:
               s = s.replace(
@@ -117,31 +115,12 @@ jobs:
                   1,
               )
 
-          # The old PWA icon route references an SVG that is not present in the repo.
-          # Keep the URL for installed clients, but serve the real PNG asset instead.
-          old_icon = '''@app.get("/draupnir-icon.svg")
-          def draupnir_icon():
-              return FileResponse(
-                  ROOT / "draupnir-icon.svg",
-                  media_type="image/svg+xml",
-                  headers={"Cache-Control": "public,max-age=86400"},
-              )'''
-          new_icon = '''@app.get("/draupnir-icon.svg")
-          def draupnir_icon():
-              return FileResponse(
-                  ROOT / "draupnir-logo.png",
-                  media_type="image/png",
-                  headers={"Cache-Control": "public,max-age=86400"},
-              )'''
-          if old_icon in s:
-              s = s.replace(old_icon, new_icon, 1)
-
+          s = s.replace('ROOT / "draupnir-icon.svg",\n        media_type="image/svg+xml",', 'ROOT / "draupnir-logo.png",\n        media_type="image/png",', 1)
           p.write_text(s)
 
           manifest = Path('manifest.webmanifest')
           if manifest.exists():
-              m = manifest.read_text()
-              m = m.replace('/draupnir-icon.svg', '/draupnir-logo.png')
+              m = manifest.read_text().replace('/draupnir-icon.svg', '/draupnir-logo.png')
               manifest.write_text(m)
 
       - name: Validate and format
