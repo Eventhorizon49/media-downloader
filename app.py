@@ -1,4 +1,4 @@
-import base64, hashlib, hmac, json, os, re, shutil, tempfile, time, zipfile
+import base64, hashlib, hmac, json, os, re, shutil, tempfile, threading, time, zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 import imageio_ffmpeg, yt_dlp
@@ -7,7 +7,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="Draupnir", version="1.5.1")
+app = FastAPI(title="Draupnir", version="1.5.2")
 SECRET = os.getenv("TOKEN_SECRET", "dev-change-me")
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 ROOT = Path(__file__).resolve().parent
@@ -15,6 +15,10 @@ SUPPORTED = ("instagram.com", "x.com", "twitter.com", "reddit.com", "redd.it")
 UA = "MediaDownloader/1.4 (+https://media-downloader-pcbv.onrender.com) Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36"
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 DIRECT_EXTS = IMAGE_EXTS + (".mp4", ".mov", ".webm", ".m4a", ".aac")
+
+# Keep heavy media work serialized on the small Render instance.
+DOWNLOAD_SLOT = threading.BoundedSemaphore(1)
+STREAM_CHUNK = 1024 * 1024
 
 
 class AnalyzeRequest(BaseModel):
@@ -126,7 +130,7 @@ def opts(download=False, out=None, fmt=None):
         "socket_timeout": 30,
         "retries": 3,
         "fragment_retries": 3,
-        "concurrent_fragment_downloads": 4,
+        "concurrent_fragment_downloads": 1,
         "http_headers": {"User-Agent": os.getenv("INSTAGRAM_USER_AGENT") or UA},
     }
     c = cookie_file()
@@ -709,11 +713,26 @@ def download_one(p, d, mode="best", height=None, prefix="media"):
     if p.get("direct") or direct_file(s):
         ext = Path(urlparse(s).path).suffix or (".jpg" if p.get("direct") else ".bin")
         t = Path(d) / (stem + ext)
-        r = cr.get(s, headers={"User-Agent": UA}, impersonate="chrome", timeout=120)
-        if r.status_code != 200:
-            raise RuntimeError(f"Direct media download failed ({r.status_code})")
-        t.write_bytes(r.content)
-        return t
+        r = cr.get(
+            s,
+            headers={"User-Agent": UA},
+            impersonate="chrome",
+            timeout=300,
+            stream=True,
+        )
+        try:
+            if r.status_code != 200:
+                raise RuntimeError(f"Direct media download failed ({r.status_code})")
+            with t.open("wb") as out:
+                for chunk in r.iter_content(chunk_size=STREAM_CHUNK):
+                    if chunk:
+                        out.write(chunk)
+            return t
+        finally:
+            try:
+                r.close()
+            except Exception:
+                pass
     fmt = (
         "bestaudio/best"
         if mode == "audio"
@@ -743,7 +762,7 @@ def download_one(p, d, mode="best", height=None, prefix="media"):
         if c:
             try:
                 os.remove(c)
-            except:
+            except Exception:
                 pass
 
 
@@ -759,6 +778,8 @@ def health():
         "instagram_profile_picture": True,
         "instagram_story": True,
         "instagram_auth_configured": instagram_auth_configured(),
+        "memory_safe_large_downloads": True,
+        "download_concurrency": 1,
     }
 
 
@@ -787,7 +808,8 @@ def download(
     p = unsign(token)
     d = tempfile.mkdtemp(prefix="media-dl-")
     try:
-        t = download_one(p, d, mode, height, "media")
+        with DOWNLOAD_SLOT:
+            t = download_one(p, d, mode, height, "media")
         background_tasks.add_task(shutil.rmtree, d, True)
         return FileResponse(t, filename=t.name, media_type="application/octet-stream")
     except Exception as e:
@@ -803,10 +825,11 @@ def batch(r: BatchRequest, background_tasks: BackgroundTasks):
     d = tempfile.mkdtemp(prefix="media-batch-")
     fs = []
     try:
-        for n, t in enumerate(r.tokens):
-            fs.append(download_one(unsign(t), d, "best", None, f"media-{n+1:02d}"))
+        with DOWNLOAD_SLOT:
+            for n, t in enumerate(r.tokens):
+                fs.append(download_one(unsign(t), d, "best", None, f"media-{n+1:02d}"))
         z = Path(d) / "media-downloader.zip"
-        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as a:
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED, allowZip64=True) as a:
             for f in fs:
                 a.write(f, arcname=f.name)
         background_tasks.add_task(shutil.rmtree, d, True)
@@ -861,8 +884,8 @@ def draupnir_logo():
 @app.get("/draupnir-icon.svg")
 def draupnir_icon():
     return FileResponse(
-        ROOT / "draupnir-icon.svg",
-        media_type="image/svg+xml",
+        ROOT / "draupnir-logo.png",
+        media_type="image/png",
         headers={"Cache-Control": "public,max-age=86400"},
     )
 
